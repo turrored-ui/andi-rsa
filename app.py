@@ -14,6 +14,8 @@ LOG_FILE = BASE / "preguntas_sin_respuesta.csv"
 LOCK = threading.Lock()
 TAG = re.compile(r"\[\[REGISTRAR:\s*(.*?)\]\]", re.S)
 
+MODELOS_RESPALDO = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"]
+
 FALLBACK = (
     "Ahora mismo no puedo responder. Puede hablar con un asesor: call center "
     "(601) 555 0100 o WhatsApp +57 300 555 0100 (L-V 7:00-19:00, sáb 8:00-14:00)."
@@ -30,9 +32,14 @@ def cargar():
         + (BASE / "base_conocimiento.md").read_text(encoding="utf-8")
     )
     # La clave va en Settings > Secrets de Streamlit Cloud. Nunca en el código.
-    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    modelo = st.secrets.get("MODEL_NAME", "gemini-3.8-flash")
-    return client, system, modelo
+    client = genai.Client(
+        api_key=st.secrets["GEMINI_API_KEY"],
+        http_options=types.HttpOptions(timeout=45000),  # 45 s, en milisegundos
+    )
+    principal = st.secrets.get("MODEL_NAME", "gemini-3.8-flash")
+    # Si el principal está saturado o sin cupo, se prueban los de respaldo en orden.
+    modelos = [principal] + [m for m in MODELOS_RESPALDO if m != principal]
+    return client, system, modelos
 
 
 def limpiar(texto: str) -> str:
@@ -53,32 +60,35 @@ def registrar(pregunta: str) -> None:
 
 
 def responder(mensaje: str, historial: list) -> str:
-    client, system, modelo = cargar()
+    client, system, modelos = cargar()
     contents = []
     for m in historial[-12:]:
         rol = "user" if m["role"] == "user" else "model"
         contents.append(types.Content(role=rol, parts=[types.Part(text=m["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=mensaje[:600])]))
-    try:
-        resp = client.models.generate_content(
-            model=modelo,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system, temperature=0.2, max_output_tokens=600
-            ),
-        )
-        texto = resp.text or ""
-    except Exception as e:
-        print("Error del modelo:", type(e).__name__, e, flush=True)
+
+    texto, errores = "", []
+    for modelo in modelos:
+        try:
+            resp = client.models.generate_content(
+                model=modelo,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system, temperature=0.2, max_output_tokens=1500
+                ),
+            )
+            texto = resp.text or ""
+            if texto.strip():
+                break
+            errores.append(f"{modelo}: respuesta vacía")
+        except Exception as e:
+            errores.append(f"{modelo}: {type(e).__name__}: {str(e)[:200]}")
+            print("Error del modelo:", errores[-1], flush=True)
+
+    if not texto.strip():
         if st.secrets.get("DEBUG"):
             # SOLO PARA PRUEBAS: quitar el secreto DEBUG antes de entregar.
-            detalle = f"ERROR: {type(e).__name__}: {str(e)[:400]}"
-            try:
-                nombres = [m.name for m in client.models.list()][:20]
-                detalle += f"\n\nModelos disponibles: {nombres}"
-            except Exception as e2:
-                detalle += f"\n\nNo pude listar modelos: {type(e2).__name__}: {str(e2)[:200]}"
-            return detalle
+            return "ERROR en todos los modelos:\n\n" + "\n\n".join(errores)
         return FALLBACK
     for q in TAG.findall(texto):
         registrar(q)

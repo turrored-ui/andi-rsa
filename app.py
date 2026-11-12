@@ -31,7 +31,7 @@ def cargar():
     )
     # La clave va en Settings > Secrets de Streamlit Cloud. Nunca en el código.
     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    modelo = st.secrets.get("MODEL_NAME", "gemini-2.5-flash")
+    modelo = st.secrets.get("MODEL_NAME", "gemini-3.8-flash")
     return client, system, modelo
 
 

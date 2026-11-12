@@ -69,7 +69,16 @@ def responder(mensaje: str, historial: list) -> str:
         )
         texto = resp.text or ""
     except Exception as e:
-        print("Error del modelo:", e)
+        print("Error del modelo:", type(e).__name__, e, flush=True)
+        if st.secrets.get("DEBUG"):
+            # SOLO PARA PRUEBAS: quitar el secreto DEBUG antes de entregar.
+            detalle = f"ERROR: {type(e).__name__}: {str(e)[:400]}"
+            try:
+                nombres = [m.name for m in client.models.list()][:20]
+                detalle += f"\n\nModelos disponibles: {nombres}"
+            except Exception as e2:
+                detalle += f"\n\nNo pude listar modelos: {type(e2).__name__}: {str(e2)[:200]}"
+            return detalle
         return FALLBACK
     for q in TAG.findall(texto):
         registrar(q)
